@@ -213,6 +213,17 @@ public class CameraCapturer: VideoCapturer {
 
         try await capturer.startCapture(with: device, format: selectedFormat.format, fps: selectedFps)
 
+        #if targetEnvironment(macCatalyst)
+        if let connection = capturer.captureSession.connections.first {
+            capturer.captureSession.beginConfiguration()
+            if let output = capturer.captureSession.outputs.first as? AVCaptureVideoDataOutput {
+                output.videoSettings = [:]
+            }
+            connection.videoOrientation = .landscapeLeft
+            capturer.captureSession.commitConfiguration()
+        }
+        #endif
+
         // Update internal vars
         _cameraCapturerState.mutate { $0.device = device }
 
