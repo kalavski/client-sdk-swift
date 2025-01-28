@@ -1,5 +1,5 @@
 /*
- * Copyright 2024 LiveKit
+ * Copyright 2025 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@ internal import LiveKitWebRTC
 #endif
 
 @objc
-public enum DegradationPreference: Int {
+public enum DegradationPreference: Int, Sendable {
     /// The SDK will decide which preference is suitable or will use WebRTC's default implementation.
     case auto
     case disabled

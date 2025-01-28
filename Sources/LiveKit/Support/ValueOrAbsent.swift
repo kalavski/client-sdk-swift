@@ -1,5 +1,5 @@
 /*
- * Copyright 2024 LiveKit
+ * Copyright 2025 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@
  */
 
 /// Allows distinguishing between setting nil and no-op in copyWith operations.
-public enum ValueOrAbsent<T> {
+public enum ValueOrAbsent<T: Sendable>: Sendable {
     case value(T)
     case absent
 

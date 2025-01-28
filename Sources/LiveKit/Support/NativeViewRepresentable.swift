@@ -1,5 +1,5 @@
 /*
- * Copyright 2024 LiveKit
+ * Copyright 2025 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,7 +23,7 @@ import UIKit
 import AppKit
 #endif
 
-#if os(iOS)
+#if os(iOS) || os(visionOS) || os(tvOS)
 public typealias NativeViewRepresentableType = UIViewRepresentable
 #elseif os(macOS)
 public typealias NativeViewRepresentableType = NSViewRepresentable
@@ -40,7 +40,7 @@ public protocol NativeViewRepresentable: NativeViewRepresentableType {
 }
 
 public extension NativeViewRepresentable {
-    #if os(iOS)
+    #if os(iOS) || os(visionOS) || os(tvOS)
     func makeUIView(context: Context) -> Self.ViewType {
         makeView(context: context)
     }

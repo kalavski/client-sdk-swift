@@ -1,5 +1,5 @@
 /*
- * Copyright 2024 LiveKit
+ * Copyright 2025 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 
 import Accelerate
 import AVFoundation
+import Combine
 
 #if swift(>=5.9)
 internal import LiveKitWebRTC
@@ -56,62 +57,60 @@ public class LKAudioBuffer: NSObject {
     }
 }
 
-@objc
-public protocol AudioCustomProcessingDelegate {
-    func audioProcessingInitialize(sampleRate sampleRateHz: Int, channels: Int)
-    func audioProcessingProcess(audioBuffer: LKAudioBuffer)
-    func audioProcessingRelease()
-}
-
-class AudioCustomProcessingDelegateAdapter: NSObject, LKRTCAudioCustomProcessingDelegate {
-    weak var target: AudioCustomProcessingDelegate?
-
-    init(target: AudioCustomProcessingDelegate? = nil) {
-        self.target = target
-    }
-
-    func audioProcessingInitialize(sampleRate sampleRateHz: Int, channels: Int) {
-        target?.audioProcessingInitialize(sampleRate: sampleRateHz, channels: channels)
-    }
-
-    func audioProcessingProcess(audioBuffer: LKRTCAudioBuffer) {
-        target?.audioProcessingProcess(audioBuffer: LKAudioBuffer(audioBuffer: audioBuffer))
-    }
-
-    func audioProcessingRelease() {
-        target?.audioProcessingRelease()
-    }
-
-    // Proxy the equality operators
-
-    override func isEqual(_ object: Any?) -> Bool {
-        guard let other = object as? AudioCustomProcessingDelegateAdapter else { return false }
-        return target === other.target
-    }
-
-    override var hash: Int {
-        guard let target else { return 0 }
-        return ObjectIdentifier(target).hashValue
-    }
-}
-
 // Audio Session Configuration related
 public class AudioManager: Loggable {
     // MARK: - Public
 
+    #if compiler(>=6.0)
+    public nonisolated(unsafe) static let shared = AudioManager()
+    #else
     public static let shared = AudioManager()
-
-    public typealias ConfigureAudioSessionFunc = (_ newState: State,
-                                                  _ oldState: State) -> Void
+    #endif
 
     public typealias DeviceUpdateFunc = (_ audioManager: AudioManager) -> Void
 
-    /// Use this to provide a custom func to configure the audio session instead of ``defaultConfigureAudioSessionFunc(newState:oldState:)``.
-    /// This method should not block and is expected to return immediately.
+    #if os(iOS) || os(visionOS) || os(tvOS)
+
+    public typealias ConfigureAudioSessionFunc = @Sendable (_ newState: State,
+                                                            _ oldState: State) -> Void
+
+    /// Use this to provide a custom function to configure the audio session, overriding the default behavior
+    /// provided by ``defaultConfigureAudioSessionFunc(newState:oldState:)``.
+    ///
+    /// - Important: This method should return immediately and must not block.
+    /// - Note: Once set, the following properties will no longer be effective:
+    ///   - ``sessionConfiguration``
+    ///   - ``isSpeakerOutputPreferred``
+    ///
+    /// If you want to revert to default behavior, set this to `nil`.
     public var customConfigureAudioSessionFunc: ConfigureAudioSessionFunc? {
-        get { _state.customConfigureFunc }
-        set { _state.mutate { $0.customConfigureFunc = newValue } }
+        get { state.customConfigureFunc }
+        set { state.mutate { $0.customConfigureFunc = newValue } }
     }
+
+    /// Determines whether the device's built-in speaker or receiver is preferred for audio output.
+    ///
+    /// - Defaults to `true`, indicating that the speaker is preferred.
+    /// - Set to `false` if the receiver is preferred instead of the speaker.
+    /// - Note: This property only applies when the audio output is routed to the built-in speaker or receiver.
+    ///
+    /// This property is ignored if ``customConfigureAudioSessionFunc`` is set.
+    public var isSpeakerOutputPreferred: Bool {
+        get { state.isSpeakerOutputPreferred }
+        set { state.mutate { $0.isSpeakerOutputPreferred = newValue } }
+    }
+
+    /// Specifies a fixed configuration for the audio session, overriding dynamic adjustments.
+    ///
+    /// If this property is set, it will take precedence over any dynamic configuration logic, including
+    /// the value of ``isSpeakerOutputPreferred``.
+    ///
+    /// This property is ignored if ``customConfigureAudioSessionFunc`` is set.
+    public var sessionConfiguration: AudioSessionConfiguration? {
+        get { state.sessionConfiguration }
+        set { state.mutate { $0.sessionConfiguration = newValue } }
+    }
+    #endif
 
     public enum TrackState {
         case none
@@ -120,63 +119,74 @@ public class AudioManager: Loggable {
         case localAndRemote
     }
 
-    public struct State: Equatable {
+    public struct State: Equatable, Sendable {
         // Only consider State mutated when public vars change
         public static func == (lhs: AudioManager.State, rhs: AudioManager.State) -> Bool {
-            lhs.localTracksCount == rhs.localTracksCount &&
-                lhs.remoteTracksCount == rhs.remoteTracksCount &&
-                lhs.isSpeakerOutputPreferred == rhs.isSpeakerOutputPreferred
-        }
+            var isEqual = lhs.localTracksCount == rhs.localTracksCount &&
+                lhs.remoteTracksCount == rhs.remoteTracksCount
 
-        // Keep this var within State so it's protected by UnfairLock
-        var customConfigureFunc: ConfigureAudioSessionFunc?
+            #if os(iOS) || os(visionOS) || os(tvOS)
+            isEqual = isEqual &&
+                lhs.isSpeakerOutputPreferred == rhs.isSpeakerOutputPreferred &&
+                lhs.sessionConfiguration == rhs.sessionConfiguration
+            #endif
+
+            return isEqual
+        }
 
         public var localTracksCount: Int = 0
         public var remoteTracksCount: Int = 0
         public var isSpeakerOutputPreferred: Bool = true
+        #if os(iOS) || os(visionOS) || os(tvOS)
+        // Keep this var within State so it's protected by UnfairLock
+        public var customConfigureFunc: ConfigureAudioSessionFunc?
+        public var sessionConfiguration: AudioSessionConfiguration?
+        #endif
 
         public var trackState: TrackState {
-            if localTracksCount > 0, remoteTracksCount == 0 {
-                return .localOnly
-            } else if localTracksCount == 0, remoteTracksCount > 0 {
-                return .remoteOnly
-            } else if localTracksCount > 0, remoteTracksCount > 0 {
-                return .localAndRemote
+            switch (localTracksCount > 0, remoteTracksCount > 0) {
+            case (true, false): return .localOnly
+            case (false, true): return .remoteOnly
+            case (true, true): return .localAndRemote
+            default: return .none
             }
-
-            return .none
         }
-    }
-
-    /// Set this to false if you prefer using the device's receiver instead of speaker. Defaults to true.
-    /// This only works when the audio output is set to the built-in speaker / receiver.
-    public var isSpeakerOutputPreferred: Bool {
-        get { _state.isSpeakerOutputPreferred }
-        set { _state.mutate { $0.isSpeakerOutputPreferred = newValue } }
     }
 
     // MARK: - AudioProcessingModule
 
     private lazy var capturePostProcessingDelegateAdapter: AudioCustomProcessingDelegateAdapter = {
-        let adapter = AudioCustomProcessingDelegateAdapter(target: nil)
+        let adapter = AudioCustomProcessingDelegateAdapter()
         RTC.audioProcessingModule.capturePostProcessingDelegate = adapter
         return adapter
     }()
 
     private lazy var renderPreProcessingDelegateAdapter: AudioCustomProcessingDelegateAdapter = {
-        let adapter = AudioCustomProcessingDelegateAdapter(target: nil)
+        let adapter = AudioCustomProcessingDelegateAdapter()
         RTC.audioProcessingModule.renderPreProcessingDelegate = adapter
         return adapter
     }()
 
+    let capturePostProcessingDelegateSubject = CurrentValueSubject<AudioCustomProcessingDelegate?, Never>(nil)
+
+    /// Add a delegate to modify the local audio buffer before it is sent to the network
+    /// - Note: Only one delegate can be set at a time, but you can create one to wrap others if needed
+    /// - Note: If you only need to observe the buffer (rather than modify it), use ``add(localAudioRenderer:)`` instead
     public var capturePostProcessingDelegate: AudioCustomProcessingDelegate? {
         get { capturePostProcessingDelegateAdapter.target }
-        set { capturePostProcessingDelegateAdapter.target = newValue }
+        set {
+            capturePostProcessingDelegateAdapter.set(target: newValue)
+            capturePostProcessingDelegateSubject.send(newValue)
+        }
     }
 
+    /// Add a delegate to modify the combined remote audio buffer (all tracks) before it is played to the user
+    /// - Note: Only one delegate can be set at a time, but you can create one to wrap others if needed
+    /// - Note: If you only need to observe the buffer (rather than modify it), use ``add(remoteAudioRenderer:)`` instead
+    /// - Note: If you need to observe the buffer for individual tracks, use ``RemoteAudioTrack/add(audioRenderer:)`` instead
     public var renderPreProcessingDelegate: AudioCustomProcessingDelegate? {
         get { renderPreProcessingDelegateAdapter.target }
-        set { renderPreProcessingDelegateAdapter.target = newValue }
+        set { renderPreProcessingDelegateAdapter.set(target: newValue) }
     }
 
     // MARK: - AudioDeviceModule
@@ -214,51 +224,52 @@ public class AudioManager: Loggable {
 
     // MARK: - Internal
 
-    var localTracksCount: Int { _state.localTracksCount }
-
-    var remoteTracksCount: Int { _state.remoteTracksCount }
-
     enum `Type` {
         case local
         case remote
     }
 
+    let state = StateSync(State())
+
     // MARK: - Private
 
-    private var _state = StateSync(State())
+    private let _configureRunner = SerialRunnerActor<Void>()
 
-    // Singleton
-    private init() {
-        // trigger events when state mutates
-        _state.onDidMutate = { [weak self] newState, oldState in
-            guard let self else { return }
-
+    #if os(iOS) || os(visionOS) || os(tvOS)
+    private func _asyncConfigure(newState: State, oldState: State) async throws {
+        try await _configureRunner.run {
             self.log("\(oldState) -> \(newState)")
-
-            #if os(iOS)
             let configureFunc = newState.customConfigureFunc ?? self.defaultConfigureAudioSessionFunc
             configureFunc(newState, oldState)
-            #endif
         }
     }
+    #endif
 
-    func trackDidStart(_ type: Type) {
-        // async mutation
-        _state.mutate { state in
+    func trackDidStart(_ type: Type) async throws {
+        let (newState, oldState) = state.mutate { state in
+            let oldState = state
             if type == .local { state.localTracksCount += 1 }
             if type == .remote { state.remoteTracksCount += 1 }
+            return (state, oldState)
         }
+        #if os(iOS) || os(visionOS) || os(tvOS)
+        try await _asyncConfigure(newState: newState, oldState: oldState)
+        #endif
     }
 
-    func trackDidStop(_ type: Type) {
-        // async mutation
-        _state.mutate { state in
-            if type == .local { state.localTracksCount -= 1 }
-            if type == .remote { state.remoteTracksCount -= 1 }
+    func trackDidStop(_ type: Type) async throws {
+        let (newState, oldState) = state.mutate { state in
+            let oldState = state
+            if type == .local { state.localTracksCount = max(state.localTracksCount - 1, 0) }
+            if type == .remote { state.remoteTracksCount = max(state.remoteTracksCount - 1, 0) }
+            return (state, oldState)
         }
+        #if os(iOS) || os(visionOS) || os(tvOS)
+        try await _asyncConfigure(newState: newState, oldState: oldState)
+        #endif
     }
 
-    #if os(iOS)
+    #if os(iOS) || os(visionOS) || os(tvOS)
     /// The default implementation when audio session configuration is requested by the SDK.
     /// Configure the `RTCAudioSession` of `WebRTC` framework.
     ///
@@ -268,77 +279,79 @@ public class AudioManager: Loggable {
     ///   - configuration: A configured RTCAudioSessionConfiguration
     ///   - setActive: passing true/false will call `AVAudioSession.setActive` internally
     public func defaultConfigureAudioSessionFunc(newState: State, oldState: State) {
-        DispatchQueue.liveKitWebRTC.async { [weak self] in
+        // Lazily computed config
+        let computeConfiguration: (() -> AudioSessionConfiguration) = {
+            switch newState.trackState {
+            case .none:
+                // Use .soloAmbient configuration
+                return .soloAmbient
+            case .remoteOnly where newState.isSpeakerOutputPreferred:
+                // Use .playback configuration with spoken audio
+                return .playback
+            default:
+                // Use .playAndRecord configuration
+                return newState.isSpeakerOutputPreferred ? .playAndRecordSpeaker : .playAndRecordReceiver
+            }
+        }
 
-            guard let self else { return }
+        let configuration = newState.sessionConfiguration ?? computeConfiguration()
 
-            // prepare config
-            let configuration = LKRTCAudioSessionConfiguration.webRTC()
+        var setActive: Bool?
+        if newState.trackState != .none, oldState.trackState == .none {
+            // activate audio session when there is any local/remote audio track
+            setActive = true
+        } else if newState.trackState == .none, oldState.trackState != .none {
+            // deactivate audio session when there are no more local/remote audio tracks
+            setActive = false
+        }
 
-            if newState.trackState == .remoteOnly && newState.isSpeakerOutputPreferred {
-                /* .playback */
-                configuration.category = AVAudioSession.Category.playback.rawValue
-                configuration.mode = AVAudioSession.Mode.spokenAudio.rawValue
-                configuration.categoryOptions = [
-                    .mixWithOthers,
-                ]
+        let session = LKRTCAudioSession.sharedInstance()
+        // Check if needs setConfiguration
+        guard configuration != session.toAudioSessionConfiguration() else {
+            log("Skipping configure audio session, no changes")
+            return
+        }
 
-            } else if [.localOnly, .localAndRemote].contains(newState.trackState) ||
-                (newState.trackState == .remoteOnly && !newState.isSpeakerOutputPreferred)
-            {
-                /* .playAndRecord */
-                configuration.category = AVAudioSession.Category.playAndRecord.rawValue
+        session.lockForConfiguration()
+        defer { session.unlockForConfiguration() }
 
-                if newState.isSpeakerOutputPreferred {
-                    // use .videoChat if speakerOutput is preferred
-                    configuration.mode = AVAudioSession.Mode.videoChat.rawValue
-                } else {
-                    // use .voiceChat if speakerOutput is not preferred
-                    configuration.mode = AVAudioSession.Mode.voiceChat.rawValue
-                }
-
-                configuration.categoryOptions = [
-                    .allowBluetooth,
-                    .allowBluetoothA2DP,
-                    .allowAirPlay,
-                ]
-
+        do {
+            log("Configuring audio session: \(String(describing: configuration))")
+            if let setActive {
+                try session.setConfiguration(configuration.toRTCType(), active: setActive)
             } else {
-                /* .soloAmbient */
-                configuration.category = AVAudioSession.Category.soloAmbient.rawValue
-                configuration.mode = AVAudioSession.Mode.default.rawValue
-                configuration.categoryOptions = []
+                try session.setConfiguration(configuration.toRTCType())
             }
-
-            var setActive: Bool?
-
-            if newState.trackState != .none, oldState.trackState == .none {
-                // activate audio session when there is any local/remote audio track
-                setActive = true
-            } else if newState.trackState == .none, oldState.trackState != .none {
-                // deactivate audio session when there are no more local/remote audio tracks
-                setActive = false
-            }
-
-            // configure session
-            let session = LKRTCAudioSession.sharedInstance()
-            session.lockForConfiguration()
-            // always unlock
-            defer { session.unlockForConfiguration() }
-
-            do {
-                self.log("configuring audio session category: \(configuration.category), mode: \(configuration.mode), setActive: \(String(describing: setActive))")
-
-                if let setActive {
-                    try session.setConfiguration(configuration, active: setActive)
-                } else {
-                    try session.setConfiguration(configuration)
-                }
-
-            } catch {
-                self.log("Failed to configure audio session with error: \(error)", .error)
-            }
+        } catch {
+            log("Failed to configure audio session with error: \(error)", .error)
         }
     }
     #endif
+}
+
+public extension AudioManager {
+    /// Add an ``AudioRenderer`` to receive pcm buffers from local input (mic).
+    /// Only ``AudioRenderer/render(pcmBuffer:)`` will be called.
+    /// Usage: `AudioManager.shared.add(localAudioRenderer: localRenderer)`
+    func add(localAudioRenderer delegate: AudioRenderer) {
+        capturePostProcessingDelegateAdapter.add(delegate: delegate)
+    }
+
+    func remove(localAudioRenderer delegate: AudioRenderer) {
+        capturePostProcessingDelegateAdapter.remove(delegate: delegate)
+    }
+}
+
+public extension AudioManager {
+    /// Add an ``AudioRenderer`` to receive pcm buffers from combined remote audio.
+    /// Only ``AudioRenderer/render(pcmBuffer:)`` will be called.
+    /// To receive buffer for individual tracks, use ``RemoteAudioTrack/add(audioRenderer:)`` instead.
+    /// Usage: `AudioManager.shared.add(remoteAudioRenderer: localRenderer)`
+    func add(remoteAudioRenderer delegate: AudioRenderer) {
+        renderPreProcessingDelegateAdapter.add(delegate: delegate)
+    }
+
+    func remove(remoteAudioRenderer delegate: AudioRenderer) {
+        renderPreProcessingDelegateAdapter.remove(delegate: delegate)
+    }
 }

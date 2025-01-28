@@ -1,5 +1,5 @@
 /*
- * Copyright 2024 LiveKit
+ * Copyright 2025 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -37,6 +37,8 @@ public class LocalParticipant: Participant {
     private var allParticipantsAllowed: Bool = true
 
     private var trackPermissions: [ParticipantTrackPermission] = []
+
+    let rpcState = RpcStateManager()
 
     /// publish a new audio track to the Room
     @objc
@@ -97,12 +99,7 @@ public class LocalParticipant: Participant {
             return await _notifyDidUnpublish()
         }
 
-        // Wait for track to stop (if required)
-        if room._state.roomOptions.stopLocalTrackOnUnpublish {
-            try await track.stop()
-        }
-
-        if let publisher = room.publisher, let sender = track._state.rtpSender {
+        if let publisher = room._state.publisher, let sender = track._state.rtpSender {
             // Remove all simulcast senders...
             let simulcastSenders = track._state.read { Array($0.rtpSenderForCodec.values) }
             for simulcastSender in simulcastSenders {
@@ -112,6 +109,11 @@ public class LocalParticipant: Participant {
             try await publisher.remove(track: sender)
             // Mark re-negotiation required...
             try await room.publisherShouldNegotiate()
+        }
+
+        // Wait for track to stop (if required)
+        if room._state.roomOptions.stopLocalTrackOnUnpublish {
+            try await track.stop()
         }
 
         try await track.onUnpublish()
@@ -187,6 +189,12 @@ public class LocalParticipant: Participant {
         let room = try requireRoom()
         try await room.signalClient.sendUpdateParticipant(name: name)
         _state.mutate { $0.name = name }
+    }
+
+    public func set(attributes: [String: String]) async throws {
+        let room = try requireRoom()
+        try await room.signalClient.sendUpdateParticipant(attributes: attributes)
+        _state.mutate { $0.attributes = attributes }
     }
 
     func sendTrackSubscriptionPermissions() async throws {
@@ -309,7 +317,11 @@ public extension LocalParticipant {
                     try await publication.unmute()
                     return publication
                 } else {
-                    try await publication.mute()
+                    if source == .camera || source == .microphone {
+                        try await publication.mute()
+                    } else {
+                        try await self.unpublish(publication: publication)
+                    }
                     return publication
                 }
             } else if enabled {
@@ -327,8 +339,10 @@ public extension LocalParticipant {
                     let localTrack: LocalVideoTrack
                     let options = (captureOptions as? ScreenShareCaptureOptions) ?? room._state.roomOptions.defaultScreenShareCaptureOptions
                     if options.useBroadcastExtension {
-                        let screenShareExtensionId = Bundle.main.infoDictionary?[BroadcastScreenCapturer.kRTCScreenSharingExtension] as? String
-                        await RPSystemBroadcastPickerView.show(for: screenShareExtensionId, showsMicrophoneButton: false)
+                        await RPSystemBroadcastPickerView.show(
+                            for: BroadcastScreenCapturer.screenSharingExtension,
+                            showsMicrophoneButton: false
+                        )
                         localTrack = LocalVideoTrack.createBroadcastScreenCapturerTrack(options: options)
                     } else {
                         localTrack = LocalVideoTrack.createInAppScreenShareTrack(options: options)
@@ -533,7 +547,7 @@ private extension LocalParticipant {
 
                     populator.disableDtx = !publishOptions.dtx
 
-                    let encoding = publishOptions.encoding ?? AudioEncoding.presetSpeech
+                    let encoding = publishOptions.encoding ?? AudioEncoding.presetMusic
 
                     self.log("[publish] maxBitrate: \(encoding.maxBitrate)")
 

@@ -1,5 +1,5 @@
 /*
- * Copyright 2024 LiveKit
+ * Copyright 2025 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -89,12 +89,19 @@ public class CameraCapturer: VideoCapturer {
     // Used to hide LKRTCVideoCapturerDelegate symbol
     private lazy var adapter: VideoCapturerDelegateAdapter = .init(cameraCapturer: self)
 
-    // RTCCameraVideoCapturer used internally for now
-    private lazy var capturer: LKRTCCameraVideoCapturer = DispatchQueue.liveKitWebRTC.sync { LKRTCCameraVideoCapturer(delegate: adapter) }
+    public var captureSession: AVCaptureSession {
+        capturer.captureSession
+    }
 
-    init(delegate: LKRTCVideoCapturerDelegate, options: CameraCaptureOptions) {
+    // RTCCameraVideoCapturer used internally for now
+    private lazy var capturer: LKRTCCameraVideoCapturer = .init(delegate: adapter)
+
+    init(delegate: LKRTCVideoCapturerDelegate,
+         options: CameraCaptureOptions,
+         processor: VideoProcessor? = nil)
+    {
         _cameraCapturerState = StateSync(State(options: options))
-        super.init(delegate: delegate)
+        super.init(delegate: delegate, processor: processor)
 
         log("isMultitaskingAccessSupported: \(isMultitaskingAccessSupported)", .info)
     }
@@ -150,8 +157,29 @@ public class CameraCapturer: VideoCapturer {
         var device: AVCaptureDevice? = options.device
 
         if device == nil {
-            let devices = try await CameraCapturer.captureDevices()
-            device = devices.first(where: { $0.position == self.options.position }) ?? devices.first
+            #if os(iOS) || os(tvOS)
+            var devices: [AVCaptureDevice]
+            if AVCaptureMultiCamSession.isMultiCamSupported {
+                // Get the list of devices already on the shared multi-cam session.
+                let existingDevices = captureSession.inputs.compactMap { $0 as? AVCaptureDeviceInput }.map(\.device)
+                log("Existing devices: \(existingDevices)")
+                // Compute other multi-cam compatible devices.
+                devices = try await DeviceManager.shared.multiCamCompatibleDevices(for: Set(existingDevices))
+            } else {
+                devices = try await CameraCapturer.captureDevices()
+            }
+            #else
+            var devices = try await CameraCapturer.captureDevices()
+            #endif
+
+            #if !os(visionOS)
+            // Filter by deviceType if specified in options.
+            if let deviceType = options.deviceType {
+                devices = devices.filter { $0.deviceType == deviceType }
+            }
+            #endif
+
+            device = devices.first { $0.position == self.options.position } ?? devices.first
         }
 
         guard let device else {
@@ -165,7 +193,7 @@ public class CameraCapturer: VideoCapturer {
         let sortedFormats = formats.map { (format: $0, dimensions: Dimensions(from: CMVideoFormatDescriptionGetDimensions($0.formatDescription))) }
             .sorted { $0.dimensions.area < $1.dimensions.area }
 
-        log("sortedFormats: \(sortedFormats.map { "(dimensions: \(String(describing: $0.dimensions)), fps: \(String(describing: $0.format.fpsRange())))" }), target dimensions: \(options.dimensions)")
+        log("sortedFormats: \(sortedFormats.map { "(dimensions: \(String(describing: $0.dimensions)), \(String(describing: $0.format.toDebugString()))" }), target dimensions: \(options.dimensions)")
 
         // default to the largest supported dimensions (backup)
         var selectedFormat = sortedFormats.last
@@ -176,10 +204,10 @@ public class CameraCapturer: VideoCapturer {
             // Use the preferred capture format if specified in options
             selectedFormat = foundFormat
         } else {
-            if let foundFormat = sortedFormats.first(where: { $0.dimensions.area >= self.options.dimensions.area && $0.format.fpsRange().contains(self.options.fps) }) {
+            if let foundFormat = sortedFormats.first(where: { ($0.dimensions.width >= self.options.dimensions.width && $0.dimensions.height >= self.options.dimensions.height) && $0.format.fpsRange().contains(self.options.fps) && $0.format.filterForMulticamSupport }) {
                 // Use the first format that satisfies preferred dimensions & fps
                 selectedFormat = foundFormat
-            } else if let foundFormat = sortedFormats.first(where: { $0.dimensions.area >= self.options.dimensions.area }) {
+            } else if let foundFormat = sortedFormats.first(where: { $0.dimensions.width >= self.options.dimensions.width && $0.dimensions.height >= self.options.dimensions.height }) {
                 // Use the first format that satisfies preferred dimensions (without fps)
                 selectedFormat = foundFormat
             }
@@ -247,7 +275,7 @@ public class CameraCapturer: VideoCapturer {
     }
 }
 
-class VideoCapturerDelegateAdapter: NSObject, LKRTCVideoCapturerDelegate {
+class VideoCapturerDelegateAdapter: NSObject, LKRTCVideoCapturerDelegate, Loggable {
     weak var cameraCapturer: CameraCapturer?
 
     init(cameraCapturer: CameraCapturer? = nil) {
@@ -256,6 +284,15 @@ class VideoCapturerDelegateAdapter: NSObject, LKRTCVideoCapturerDelegate {
 
     func capturer(_ capturer: LKRTCVideoCapturer, didCapture frame: LKRTCVideoFrame) {
         guard let cameraCapturer else { return }
+
+        var frame = frame
+        let adaptOutputFormatEnabled = (frame.width != cameraCapturer.options.dimensions.width || frame.height != cameraCapturer.options.dimensions.height)
+        if adaptOutputFormatEnabled, let newFrame = frame.cropAndScaleFromCenter(targetWidth: cameraCapturer.options.dimensions.width,
+                                                                                 targetHeight: cameraCapturer.options.dimensions.height)
+        {
+            frame = newFrame
+        }
+
         // Pass frame to video source
         cameraCapturer.capture(frame: frame, capturer: capturer, device: cameraCapturer.device, options: cameraCapturer.options)
     }
@@ -270,10 +307,13 @@ public extension LocalVideoTrack {
     @objc
     static func createCameraTrack(name: String? = nil,
                                   options: CameraCaptureOptions? = nil,
-                                  reportStatistics: Bool = false) -> LocalVideoTrack
+                                  reportStatistics: Bool = false,
+                                  processor: VideoProcessor? = nil) -> LocalVideoTrack
     {
         let videoSource = RTC.createVideoSource(forScreenShare: false)
-        let capturer = CameraCapturer(delegate: videoSource, options: options ?? CameraCaptureOptions())
+        let capturer = CameraCapturer(delegate: videoSource,
+                                      options: options ?? CameraCaptureOptions(),
+                                      processor: processor)
         return LocalVideoTrack(name: name ?? Track.cameraName,
                                source: .camera,
                                capturer: capturer,
@@ -313,5 +353,71 @@ extension AVCaptureDevice.Format {
         videoSupportedFrameRateRanges.map { $0.toRange() }.reduce(into: 0 ... 0) { result, current in
             result = merge(range: result, with: current)
         }
+    }
+
+    // Used for filtering.
+    // Only include multi-cam supported devices if in multi-cam mode. Otherwise, always include the devices.
+    var filterForMulticamSupport: Bool {
+        #if os(iOS) || os(tvOS)
+        return AVCaptureMultiCamSession.isMultiCamSupported ? isMultiCamSupported : true
+        #else
+        return true
+        #endif
+    }
+}
+
+extension LKRTCVideoFrame {
+    func cropAndScaleFromCenter(
+        targetWidth: Int32,
+        targetHeight: Int32
+    ) -> LKRTCVideoFrame? {
+        // Ensure target dimensions don't exceed source dimensions
+        let scaleWidth: Int32
+        let scaleHeight: Int32
+
+        if targetWidth > width || targetHeight > height {
+            // Calculate scale factor to fit within source dimensions
+            let widthScale = Double(targetWidth) / Double(width) // Scale down factor
+            let heightScale = Double(targetHeight) / Double(height)
+            let scale = max(widthScale, heightScale)
+
+            // Apply scale to target dimensions
+            scaleWidth = Int32(Double(targetWidth) / scale)
+            scaleHeight = Int32(Double(targetHeight) / scale)
+        } else {
+            scaleWidth = targetWidth
+            scaleHeight = targetHeight
+        }
+
+        // Calculate aspect ratios
+        let sourceRatio = Double(width) / Double(height)
+        let targetRatio = Double(scaleWidth) / Double(scaleHeight)
+
+        // Calculate crop dimensions
+        let (cropWidth, cropHeight): (Int32, Int32)
+        if sourceRatio > targetRatio {
+            // Source is wider - crop width
+            cropHeight = height
+            cropWidth = Int32(Double(height) * targetRatio)
+        } else {
+            // Source is taller - crop height
+            cropWidth = width
+            cropHeight = Int32(Double(width) / targetRatio)
+        }
+
+        // Calculate center offsets
+        let offsetX = (width - cropWidth) / 2
+        let offsetY = (height - cropHeight) / 2
+
+        guard let newBuffer = buffer.cropAndScale?(
+            with: offsetX,
+            offsetY: offsetY,
+            cropWidth: cropWidth,
+            cropHeight: cropHeight,
+            scaleWidth: scaleWidth,
+            scaleHeight: scaleHeight
+        ) else { return nil }
+
+        return LKRTCVideoFrame(buffer: newBuffer, rotation: rotation, timeStampNs: timeStampNs)
     }
 }

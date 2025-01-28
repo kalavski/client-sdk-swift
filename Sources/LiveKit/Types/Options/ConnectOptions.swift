@@ -1,5 +1,5 @@
 /*
- * Copyright 2024 LiveKit
+ * Copyright 2025 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,7 +18,7 @@ import Foundation
 
 /// Options used when establishing a connection.
 @objc
-public class ConnectOptions: NSObject {
+public final class ConnectOptions: NSObject, Sendable {
     /// Automatically subscribe to ``RemoteParticipant``'s tracks.
     /// Defaults to true.
     @objc
@@ -32,6 +32,10 @@ public class ConnectOptions: NSObject {
     @objc
     public let reconnectAttemptDelay: TimeInterval
 
+    /// The timeout interval for the initial websocket connection.
+    @objc
+    public let socketConnectTimeoutInterval: TimeInterval
+
     @objc
     public let primaryTransportConnectTimeout: TimeInterval
 
@@ -42,6 +46,9 @@ public class ConnectOptions: NSObject {
     @objc
     public let iceServers: [IceServer]
 
+    @objc
+    public let iceTransportPolicy: IceTransportPolicy
+
     /// LiveKit server protocol version to use. Generally, it's not recommended to change this.
     @objc
     public let protocolVersion: ProtocolVersion
@@ -51,9 +58,11 @@ public class ConnectOptions: NSObject {
         autoSubscribe = true
         reconnectAttempts = 3
         reconnectAttemptDelay = .defaultReconnectAttemptDelay
+        socketConnectTimeoutInterval = .defaultSocketConnect
         primaryTransportConnectTimeout = .defaultTransportState
         publisherTransportConnectTimeout = .defaultTransportState
         iceServers = []
+        iceTransportPolicy = .all
         protocolVersion = .v12
     }
 
@@ -61,17 +70,21 @@ public class ConnectOptions: NSObject {
     public init(autoSubscribe: Bool = true,
                 reconnectAttempts: Int = 3,
                 reconnectAttemptDelay: TimeInterval = .defaultReconnectAttemptDelay,
+                socketConnectTimeoutInterval: TimeInterval = .defaultSocketConnect,
                 primaryTransportConnectTimeout: TimeInterval = .defaultTransportState,
                 publisherTransportConnectTimeout: TimeInterval = .defaultTransportState,
                 iceServers: [IceServer] = [],
+                iceTransportPolicy: IceTransportPolicy = .all,
                 protocolVersion: ProtocolVersion = .v12)
     {
         self.autoSubscribe = autoSubscribe
         self.reconnectAttempts = reconnectAttempts
         self.reconnectAttemptDelay = reconnectAttemptDelay
+        self.socketConnectTimeoutInterval = socketConnectTimeoutInterval
         self.primaryTransportConnectTimeout = primaryTransportConnectTimeout
         self.publisherTransportConnectTimeout = publisherTransportConnectTimeout
         self.iceServers = iceServers
+        self.iceTransportPolicy = iceTransportPolicy
         self.protocolVersion = protocolVersion
     }
 
@@ -82,9 +95,11 @@ public class ConnectOptions: NSObject {
         return autoSubscribe == other.autoSubscribe &&
             reconnectAttempts == other.reconnectAttempts &&
             reconnectAttemptDelay == other.reconnectAttemptDelay &&
+            socketConnectTimeoutInterval == other.socketConnectTimeoutInterval &&
             primaryTransportConnectTimeout == other.primaryTransportConnectTimeout &&
             publisherTransportConnectTimeout == other.publisherTransportConnectTimeout &&
             iceServers == other.iceServers &&
+            iceTransportPolicy == other.iceTransportPolicy &&
             protocolVersion == other.protocolVersion
     }
 
@@ -93,9 +108,11 @@ public class ConnectOptions: NSObject {
         hasher.combine(autoSubscribe)
         hasher.combine(reconnectAttempts)
         hasher.combine(reconnectAttemptDelay)
+        hasher.combine(socketConnectTimeoutInterval)
         hasher.combine(primaryTransportConnectTimeout)
         hasher.combine(publisherTransportConnectTimeout)
         hasher.combine(iceServers)
+        hasher.combine(iceTransportPolicy)
         hasher.combine(protocolVersion)
         return hasher.finalize()
     }

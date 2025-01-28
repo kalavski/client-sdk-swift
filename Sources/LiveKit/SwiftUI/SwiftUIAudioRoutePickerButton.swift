@@ -1,5 +1,5 @@
 /*
- * Copyright 2024 LiveKit
+ * Copyright 2025 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,6 +23,7 @@ internal import LiveKitWebRTC
 @_implementationOnly import LiveKitWebRTC
 #endif
 
+#if os(iOS) || os(macOS)
 public struct SwiftUIAudioRoutePickerButton: NativeViewRepresentable {
     public init() {}
 
@@ -41,3 +42,4 @@ public struct SwiftUIAudioRoutePickerButton: NativeViewRepresentable {
     public func updateView(_: AVRoutePickerView, context _: Context) {}
     public static func dismantleView(_: AVRoutePickerView, coordinator _: ()) {}
 }
+#endif

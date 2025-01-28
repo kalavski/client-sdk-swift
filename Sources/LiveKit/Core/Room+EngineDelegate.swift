@@ -1,5 +1,5 @@
 /*
- * Copyright 2024 LiveKit
+ * Copyright 2025 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -192,6 +192,88 @@ extension Room {
                     delegate.participant?(participant, didReceiveData: packet.payload, forTopic: packet.topic)
                 }
             }
+        }
+    }
+
+    func room(didReceiveTranscriptionPacket packet: Livekit_Transcription) {
+        // Try to find matching Participant.
+        guard let participant = allParticipants[Participant.Identity(from: packet.transcribedParticipantIdentity)] else {
+            log("[Transcription] Could not find participant: \(packet.transcribedParticipantIdentity)", .warning)
+            return
+        }
+
+        guard let publication = participant._state.read({ $0.trackPublications[Track.Sid(from: packet.trackID)] }) else {
+            log("[Transcription] Could not find publication: \(packet.trackID)", .warning)
+            return
+        }
+
+        guard !packet.segments.isEmpty else {
+            log("[Transcription] Received segments are empty", .warning)
+            return
+        }
+
+        let segments = packet.segments.map { segment in
+            TranscriptionSegment(id: segment.id,
+                                 text: segment.text,
+                                 language: segment.language,
+                                 firstReceivedTime: _state.transcriptionReceivedTimes[segment.id] ?? Date(),
+                                 lastReceivedTime: Date(),
+                                 isFinal: segment.final)
+        }
+
+        _state.mutate { state in
+            for segment in segments {
+                if segment.isFinal {
+                    state.transcriptionReceivedTimes.removeValue(forKey: segment.id)
+                } else {
+                    state.transcriptionReceivedTimes[segment.id] = segment.firstReceivedTime
+                }
+            }
+        }
+
+        delegates.notify {
+            $0.room?(self, participant: participant, trackPublication: publication, didReceiveTranscriptionSegments: segments)
+        }
+
+        participant.delegates.notify {
+            $0.participant?(participant, trackPublication: publication, didReceiveTranscriptionSegments: segments)
+        }
+    }
+
+    func room(didReceiveRpcResponse response: Livekit_RpcResponse) {
+        let (payload, error): (String?, RpcError?) = {
+            switch response.value {
+            case let .payload(v): return (v, nil)
+            case let .error(e): return (nil, RpcError.fromProto(e))
+            default: return (nil, nil)
+            }
+        }()
+
+        localParticipant.handleIncomingRpcResponse(requestId: response.requestID,
+                                                   payload: payload,
+                                                   error: error)
+    }
+
+    func room(didReceiveRpcAck ack: Livekit_RpcAck) {
+        let requestId = ack.requestID
+        localParticipant.handleIncomingRpcAck(requestId: requestId)
+    }
+
+    func room(didReceiveRpcRequest request: Livekit_RpcRequest, from participantIdentity: String) {
+        let callerIdentity = Participant.Identity(from: participantIdentity)
+        let requestId = request.id
+        let method = request.method
+        let payload = request.payload
+        let responseTimeout = TimeInterval(UInt64(request.responseTimeoutMs) / UInt64(msecPerSec))
+        let version = Int(request.version)
+
+        Task {
+            await localParticipant.handleIncomingRpcRequest(callerIdentity: callerIdentity,
+                                                            requestId: requestId,
+                                                            method: method,
+                                                            payload: payload,
+                                                            responseTimeout: responseTimeout,
+                                                            version: version)
         }
     }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2024 LiveKit
+ * Copyright 2025 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -103,9 +103,14 @@ extension Room: SignalClientDelegate {
             _state.mutate {
                 $0.sid = Room.Sid(from: joinResponse.room.sid)
                 $0.name = joinResponse.room.name
+                $0.serverInfo = joinResponse.serverInfo
+                $0.creationTime = Date(timeIntervalSince1970: TimeInterval(joinResponse.room.creationTime))
+                $0.maxParticipants = Int(joinResponse.room.maxParticipants)
+
                 $0.metadata = joinResponse.room.metadata
                 $0.isRecording = joinResponse.room.activeRecording
-                $0.serverInfo = joinResponse.serverInfo
+                $0.numParticipants = Int(joinResponse.room.numParticipants)
+                $0.numPublishers = Int(joinResponse.room.numPublishers)
 
                 localParticipant.set(info: joinResponse.participant, connectionState: $0.connectionState)
 
@@ -122,7 +127,6 @@ extension Room: SignalClientDelegate {
         _state.mutate {
             $0.metadata = room.metadata
             $0.isRecording = room.activeRecording
-            $0.maxParticipants = Int(room.maxParticipants)
             $0.numParticipants = Int(room.numParticipants)
             $0.numPublishers = Int(room.numPublishers)
         }
@@ -301,8 +305,8 @@ extension Room: SignalClientDelegate {
         }
     }
 
-    func signalClient(_: SignalClient, didReceiveIceCandidate iceCandidate: LKRTCIceCandidate, target: Livekit_SignalTarget) async {
-        guard let transport = target == .subscriber ? subscriber : publisher else {
+    func signalClient(_: SignalClient, didReceiveIceCandidate iceCandidate: IceCandidate, target: Livekit_SignalTarget) async {
+        guard let transport = target == .subscriber ? _state.subscriber : _state.publisher else {
             log("Failed to add ice candidate, transport is nil for target: \(target)", .error)
             return
         }
@@ -326,7 +330,7 @@ extension Room: SignalClientDelegate {
     func signalClient(_ signalClient: SignalClient, didReceiveOffer offer: LKRTCSessionDescription) async {
         log("Received offer, creating & sending answer...")
 
-        guard let subscriber else {
+        guard let subscriber = _state.subscriber else {
             log("Failed to send answer, subscriber is nil", .error)
             return
         }
@@ -344,5 +348,23 @@ extension Room: SignalClientDelegate {
     func signalClient(_: SignalClient, didUpdateToken token: String) async {
         // update token
         _state.mutate { $0.token = token }
+    }
+
+    func signalClient(_: SignalClient, didSubscribeTrack trackSid: Track.Sid) async {
+        // Find the local track publication.
+        guard let track = localParticipant.trackPublications[trackSid] as? LocalTrackPublication else {
+            log("Could not find local track publication for subscribed event")
+            return
+        }
+
+        // Notify Room.
+        delegates.notify {
+            $0.room?(self, participant: self.localParticipant, remoteDidSubscribeTrack: track)
+        }
+
+        // Notify LocalParticipant.
+        localParticipant.delegates.notify {
+            $0.participant?(self.localParticipant, remoteDidSubscribeTrack: track)
+        }
     }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2024 LiveKit
+ * Copyright 2025 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -41,20 +41,20 @@ public class Track: NSObject, Loggable {
     // MARK: - Public types
 
     @objc(TrackKind)
-    public enum Kind: Int, Codable {
+    public enum Kind: Int, Codable, Sendable {
         case audio
         case video
         case none
     }
 
     @objc(TrackState)
-    public enum TrackState: Int, Codable {
+    public enum TrackState: Int, Codable, Sendable {
         case stopped
         case started
     }
 
     @objc(TrackSource)
-    public enum Source: Int, Codable {
+    public enum Source: Int, Codable, Sendable {
         case unknown
         case camera
         case microphone
@@ -63,7 +63,7 @@ public class Track: NSObject, Loggable {
     }
 
     @objc(PublishState)
-    public enum PublishState: Int {
+    public enum PublishState: Int, Sendable {
         case unpublished
         case published
     }
@@ -140,6 +140,8 @@ public class Track: NSObject, Loggable {
     // MARK: - Private
 
     private let _statisticsTimer = AsyncTimer(interval: 1.0)
+
+    private let _startStopSerialRunner = SerialRunnerActor<Void>()
 
     init(name: String,
          kind: Kind,
@@ -230,24 +232,30 @@ public class Track: NSObject, Loggable {
 
     @objc
     public final func start() async throws {
-        guard _state.trackState != .started else {
-            log("Already started", .warning)
-            return
+        try await _startStopSerialRunner.run { [weak self] in
+            guard let self else { return }
+            guard self._state.trackState != .started else {
+                self.log("Already started", .warning)
+                return
+            }
+            try await self.startCapture()
+            if self is RemoteTrack { try await self.enable() }
+            self._state.mutate { $0.trackState = .started }
         }
-        try await startCapture()
-        if self is RemoteTrack { try await enable() }
-        _state.mutate { $0.trackState = .started }
     }
 
     @objc
     public final func stop() async throws {
-        guard _state.trackState != .stopped else {
-            log("Already stopped", .warning)
-            return
+        try await _startStopSerialRunner.run { [weak self] in
+            guard let self else { return }
+            guard self._state.trackState != .stopped else {
+                self.log("Already stopped", .warning)
+                return
+            }
+            try await self.stopCapture()
+            if self is RemoteTrack { try await self.disable() }
+            self._state.mutate { $0.trackState = .stopped }
         }
-        try await stopCapture()
-        if self is RemoteTrack { try await disable() }
-        _state.mutate { $0.trackState = .stopped }
     }
 
     // Returns true if didEnable
@@ -343,50 +351,23 @@ extension Track {
     func _mute() async throws {
         // LocalTrack only, already muted
         guard self is LocalTrack, !isMuted else { return }
-        try await disable()
-        try await stop()
+        try await disable() // Disable track first
+        // Only stop if VideoTrack
+        if self is LocalVideoTrack {
+            try await stop()
+        }
         set(muted: true, shouldSendSignal: true)
     }
 
     func _unmute() async throws {
         // LocalTrack only, already un-muted
         guard self is LocalTrack, isMuted else { return }
-        try await enable()
-        try await start()
+        // Only start if VideoTrack
+        if self is LocalVideoTrack {
+            try await start()
+        }
+        try await enable() // Enable track
         set(muted: false, shouldSendSignal: true)
-    }
-}
-
-// MARK: - VideoTrack
-
-// workaround for error:
-// @objc can only be used with members of classes, @objc protocols, and concrete extensions of classes
-//
-extension Track {
-    func _add(videoRenderer: VideoRenderer) {
-        guard self is VideoTrack, let rtcVideoTrack = mediaTrack as? LKRTCVideoTrack else {
-            log("mediaTrack is not a RTCVideoTrack", .error)
-            return
-        }
-
-        _state.mutate {
-            $0.videoRenderers.add(videoRenderer)
-        }
-
-        rtcVideoTrack.add(VideoRendererAdapter(target: videoRenderer, localVideoTrack: self as? LocalVideoTrack))
-    }
-
-    func _remove(videoRenderer: VideoRenderer) {
-        guard self is VideoTrack, let rtcVideoTrack = mediaTrack as? LKRTCVideoTrack else {
-            log("mediaTrack is not a RTCVideoTrack", .error)
-            return
-        }
-
-        _state.mutate {
-            $0.videoRenderers.remove(videoRenderer)
-        }
-
-        rtcVideoTrack.remove(VideoRendererAdapter(target: videoRenderer, localVideoTrack: self as? LocalVideoTrack))
     }
 }
 

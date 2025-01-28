@@ -1,5 +1,5 @@
 /*
- * Copyright 2024 LiveKit
+ * Copyright 2025 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -29,7 +29,7 @@ public extension TimeInterval {
     static let defaultPublisherDataChannelOpen: Self = 7
     static let resolveSid: Self = 7 + 5 // Join response + 5
     static let defaultPublish: Self = 10
-    static let defaultCaptureStart: Self = 5
+    static let defaultCaptureStart: Self = 10
 }
 
 extension TimeInterval {

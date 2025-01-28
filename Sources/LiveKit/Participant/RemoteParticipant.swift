@@ -1,5 +1,5 @@
 /*
- * Copyright 2024 LiveKit
+ * Copyright 2025 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -118,12 +118,10 @@ public class RemoteParticipant: Participant {
         await publication.set(track: track)
         publication.set(subscriptionAllowed: true)
 
-        if room.subscriber == nil {
-            log("Subscriber is nil", .error)
-        }
-
-        if let transport = room.subscriber {
+        if let transport = room._state.subscriber {
             await track.set(transport: transport, rtpReceiver: rtpReceiver)
+        } else {
+            log("Subscriber is nil", .error)
         }
 
         add(publication: publication)

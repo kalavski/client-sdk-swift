@@ -1,5 +1,5 @@
 /*
- * Copyright 2024 LiveKit
+ * Copyright 2025 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,7 +28,7 @@ actor SignalClient: Loggable {
     typealias AddTrackRequestPopulator<R> = (inout Livekit_AddTrackRequest) throws -> R
     typealias AddTrackResult<R> = (result: R, trackInfo: Livekit_TrackInfo)
 
-    public enum ConnectResponse {
+    public enum ConnectResponse: Sendable {
         case join(Livekit_JoinResponse)
         case reconnect(Livekit_ReconnectResponse)
 
@@ -110,10 +110,11 @@ actor SignalClient: Loggable {
     }
 
     @discardableResult
-    func connect(_ urlString: String,
+    func connect(_ url: URL,
                  _ token: String,
                  connectOptions: ConnectOptions? = nil,
                  reconnectMode: ReconnectMode? = nil,
+                 participantSid: Participant.Sid? = nil,
                  adaptiveStream: Bool) async throws -> ConnectResponse
     {
         await cleanUp()
@@ -122,14 +123,12 @@ actor SignalClient: Loggable {
             log("[Connect] mode: \(String(describing: reconnectMode))")
         }
 
-        guard let url = Utils.buildUrl(urlString,
-                                       token,
-                                       connectOptions: connectOptions,
-                                       reconnectMode: reconnectMode,
-                                       adaptiveStream: adaptiveStream)
-        else {
-            throw LiveKitError(.failedToParseUrl)
-        }
+        let url = try Utils.buildUrl(url,
+                                     token,
+                                     connectOptions: connectOptions,
+                                     reconnectMode: reconnectMode,
+                                     participantSid: participantSid,
+                                     adaptiveStream: adaptiveStream)
 
         if reconnectMode != nil {
             log("[Connect] with url: \(url)")
@@ -140,7 +139,7 @@ actor SignalClient: Loggable {
         connectionState = (reconnectMode != nil ? .reconnecting : .connecting)
 
         do {
-            let socket = try await WebSocket(url: url)
+            let socket = try await WebSocket(url: url, connectOptions: connectOptions)
 
             _messageLoopTask = Task.detached {
                 self.log("Did enter WebSocket message loop...")
@@ -151,7 +150,6 @@ actor SignalClient: Loggable {
                 } catch {
                     await self.cleanUp(withError: error)
                 }
-                self.log("Did exit WebSocket message loop...")
             }
 
             let connectResponse = try await _connectResponseCompleter.wait()
@@ -179,14 +177,12 @@ actor SignalClient: Loggable {
             await cleanUp(withError: error)
 
             // Validate...
-            guard let validateUrl = Utils.buildUrl(urlString,
-                                                   token,
-                                                   connectOptions: connectOptions,
-                                                   adaptiveStream: adaptiveStream,
-                                                   validate: true)
-            else {
-                throw LiveKitError(.failedToParseUrl, message: "Failed to parse validation url")
-            }
+            let validateUrl = try Utils.buildUrl(url,
+                                                 token,
+                                                 connectOptions: connectOptions,
+                                                 participantSid: participantSid,
+                                                 adaptiveStream: adaptiveStream,
+                                                 validate: true)
 
             log("Validating with url: \(validateUrl)...")
             let validationResponse = try await HTTP.requestString(from: validateUrl)
@@ -236,7 +232,7 @@ private extension SignalClient {
     func _onWebSocketMessage(message: URLSessionWebSocketTask.Message) async {
         let response: Livekit_SignalResponse? = {
             switch message {
-            case let .data(data): return try? Livekit_SignalResponse(contiguousBytes: data)
+            case let .data(data): return try? Livekit_SignalResponse(serializedData: data)
             case let .string(string): return try? Livekit_SignalResponse(jsonString: string)
             default: return nil
             }
@@ -293,7 +289,7 @@ private extension SignalClient {
                 return
             }
 
-            _delegate.notifyDetached { await $0.signalClient(self, didReceiveIceCandidate: rtcCandidate, target: trickle.target) }
+            _delegate.notifyDetached { await $0.signalClient(self, didReceiveIceCandidate: rtcCandidate.toLKType(), target: trickle.target) }
 
         case let .update(update):
             _delegate.notifyDetached { await $0.signalClient(self, didUpdateParticipants: update.participants) }
@@ -339,10 +335,16 @@ private extension SignalClient {
             await _onReceivedPong(r)
 
         case .pongResp:
-            log("received pongResp message")
+            log("Received pongResp message")
 
         case .subscriptionResponse:
-            log("received subscriptionResponse message")
+            log("Received subscriptionResponse message")
+
+        case .requestResponse:
+            log("Received requestResponse message")
+
+        case let .trackSubscribed(trackSubscribed):
+            _delegate.notifyDetached { await $0.signalClient(self, didSubscribeTrack: Track.Sid(from: trackSubscribed.trackSid)) }
         }
     }
 }
@@ -375,11 +377,11 @@ extension SignalClient {
         try await _sendRequest(r)
     }
 
-    func sendCandidate(candidate: LKRTCIceCandidate, target: Livekit_SignalTarget) async throws {
+    func sendCandidate(candidate: IceCandidate, target: Livekit_SignalTarget) async throws {
         let r = try Livekit_SignalRequest.with {
             $0.trickle = try Livekit_TrickleRequest.with {
                 $0.target = target
-                $0.candidateInit = try candidate.toLKType().toJsonString()
+                $0.candidateInit = try candidate.toJsonString()
             }
         }
 
@@ -489,11 +491,26 @@ extension SignalClient {
         try await _sendRequest(r)
     }
 
-    func sendUpdateParticipant(metadata: String? = nil, name: String? = nil) async throws {
+    func sendUpdateParticipant(name: String? = nil,
+                               metadata: String? = nil,
+                               attributes: [String: String]? = nil) async throws
+    {
         let r = Livekit_SignalRequest.with {
             $0.updateMetadata = Livekit_UpdateParticipantMetadata.with {
-                $0.metadata = metadata ?? ""
                 $0.name = name ?? ""
+                $0.metadata = metadata ?? ""
+                $0.attributes = attributes ?? [:]
+            }
+        }
+
+        try await _sendRequest(r)
+    }
+
+    func sendUpdateLocalAudioTrack(trackSid: Track.Sid, features: Set<Livekit_AudioTrackFeature>) async throws {
+        let r = Livekit_SignalRequest.with {
+            $0.updateAudioTrack = Livekit_UpdateLocalAudioTrack.with {
+                $0.trackSid = trackSid.stringValue
+                $0.features = Array(features)
             }
         }
 

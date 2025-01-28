@@ -1,5 +1,5 @@
 /*
- * Copyright 2024 LiveKit
+ * Copyright 2025 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,7 +33,7 @@ extension RTCPeerConnectionState {
 }
 
 extension Room: TransportDelegate {
-    func transport(_ transport: Transport, didUpdateState pcState: RTCPeerConnectionState) async {
+    func transport(_ transport: Transport, didUpdateState pcState: RTCPeerConnectionState) {
         log("target: \(transport.target), connectionState: \(pcState.description)")
 
         // primary connected
@@ -57,25 +57,29 @@ extension Room: TransportDelegate {
         if _state.connectionState == .connected {
             // Attempt re-connect if primary or publisher transport failed
             if transport.isPrimary || (_state.hasPublished && transport.target == .publisher), pcState.isDisconnected {
-                do {
-                    try await startReconnect(reason: .transport)
-                } catch {
-                    log("Failed calling startReconnect, error: \(error)", .error)
+                Task {
+                    do {
+                        try await startReconnect(reason: .transport)
+                    } catch {
+                        log("Failed calling startReconnect, error: \(error)", .error)
+                    }
                 }
             }
         }
     }
 
-    func transport(_ transport: Transport, didGenerateIceCandidate iceCandidate: LKRTCIceCandidate) async {
-        do {
-            log("sending iceCandidate")
-            try await signalClient.sendCandidate(candidate: iceCandidate, target: transport.target)
-        } catch {
-            log("Failed to send iceCandidate, error: \(error)", .error)
+    func transport(_ transport: Transport, didGenerateIceCandidate iceCandidate: IceCandidate) {
+        Task {
+            do {
+                log("sending iceCandidate")
+                try await signalClient.sendCandidate(candidate: iceCandidate, target: transport.target)
+            } catch {
+                log("Failed to send iceCandidate, error: \(error)", .error)
+            }
         }
     }
 
-    func transport(_ transport: Transport, didAddTrack track: LKRTCMediaStreamTrack, rtpReceiver: LKRTCRtpReceiver, streams: [LKRTCMediaStream]) async {
+    func transport(_ transport: Transport, didAddTrack track: LKRTCMediaStreamTrack, rtpReceiver: LKRTCRtpReceiver, streams: [LKRTCMediaStream]) {
         guard !streams.isEmpty else {
             log("Received onTrack with no streams!", .warning)
             return
@@ -95,23 +99,25 @@ extension Room: TransportDelegate {
         }
     }
 
-    func transport(_ transport: Transport, didRemoveTrack track: LKRTCMediaStreamTrack) async {
+    func transport(_ transport: Transport, didRemoveTrack track: LKRTCMediaStreamTrack) {
         if transport.target == .subscriber {
-            await engine(self, didRemoveTrack: track)
+            Task {
+                await engine(self, didRemoveTrack: track)
+            }
         }
     }
 
-    func transport(_ transport: Transport, didOpenDataChannel dataChannel: LKRTCDataChannel) async {
+    func transport(_ transport: Transport, didOpenDataChannel dataChannel: LKRTCDataChannel) {
         log("Server opened data channel \(dataChannel.label)(\(dataChannel.readyState))")
 
-        if subscriberPrimary, transport.target == .subscriber {
+        if _state.isSubscriberPrimary, transport.target == .subscriber {
             switch dataChannel.label {
-            case LKRTCDataChannel.labels.reliable: await subscriberDataChannel.set(reliable: dataChannel)
-            case LKRTCDataChannel.labels.lossy: await subscriberDataChannel.set(lossy: dataChannel)
+            case LKRTCDataChannel.labels.reliable: subscriberDataChannel.set(reliable: dataChannel)
+            case LKRTCDataChannel.labels.lossy: subscriberDataChannel.set(lossy: dataChannel)
             default: log("Unknown data channel label \(dataChannel.label)", .warning)
             }
         }
     }
 
-    func transportShouldNegotiate(_: Transport) async {}
+    func transportShouldNegotiate(_: Transport) {}
 }

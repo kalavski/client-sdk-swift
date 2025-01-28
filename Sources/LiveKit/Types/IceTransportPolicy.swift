@@ -1,5 +1,5 @@
 /*
- * Copyright 2024 LiveKit
+ * Copyright 2025 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,11 +14,29 @@
  * limitations under the License.
  */
 
-@testable import LiveKit
-import XCTest
+import Foundation
 
-class Basic: XCTestCase {
-    func testReadVersion() {
-        print("LiveKitSDK.version: \(LiveKitSDK.version)")
+#if swift(>=5.9)
+internal import LiveKitWebRTC
+#else
+@_implementationOnly import LiveKitWebRTC
+#endif
+
+@objc
+public enum IceTransportPolicy: Int, Sendable {
+    case none
+    case relay
+    case noHost
+    case all
+}
+
+extension IceTransportPolicy {
+    func toRTCType() -> RTCIceTransportPolicy {
+        switch self {
+        case .none: return .none
+        case .relay: return .relay
+        case .noHost: return .noHost
+        case .all: return .all
+        }
     }
 }

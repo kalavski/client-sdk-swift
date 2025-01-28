@@ -1,5 +1,5 @@
 /*
- * Copyright 2024 LiveKit
+ * Copyright 2025 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,7 +23,7 @@ internal import LiveKitWebRTC
 #endif
 
 @objc
-public class AudioCaptureOptions: NSObject, CaptureOptions {
+public final class AudioCaptureOptions: NSObject, CaptureOptions, Sendable {
     @objc
     public let echoCancellation: Bool
 
@@ -38,12 +38,6 @@ public class AudioCaptureOptions: NSObject, CaptureOptions {
 
     @objc
     public let highpassFilter: Bool
-
-    @objc
-    public let experimentalNoiseSuppression: Bool = false
-
-    @objc
-    public let experimentalAutoGainControl: Bool = false
 
     public init(echoCancellation: Bool = true,
                 noiseSuppression: Bool = true,
@@ -66,9 +60,7 @@ public class AudioCaptureOptions: NSObject, CaptureOptions {
             noiseSuppression == other.noiseSuppression &&
             autoGainControl == other.autoGainControl &&
             typingNoiseDetection == other.typingNoiseDetection &&
-            highpassFilter == other.highpassFilter &&
-            experimentalNoiseSuppression == other.experimentalNoiseSuppression &&
-            experimentalAutoGainControl == other.experimentalAutoGainControl
+            highpassFilter == other.highpassFilter
     }
 
     override public var hash: Int {
@@ -78,8 +70,17 @@ public class AudioCaptureOptions: NSObject, CaptureOptions {
         hasher.combine(autoGainControl)
         hasher.combine(typingNoiseDetection)
         hasher.combine(highpassFilter)
-        hasher.combine(experimentalNoiseSuppression)
-        hasher.combine(experimentalAutoGainControl)
         return hasher.finalize()
+    }
+}
+
+// Internal
+extension AudioCaptureOptions {
+    func toFeatures() -> Set<Livekit_AudioTrackFeature> {
+        Set([
+            echoCancellation ? .tfEchoCancellation : nil,
+            noiseSuppression ? .tfNoiseSuppression : nil,
+            autoGainControl ? .tfAutoGainControl : nil,
+        ].compactMap { $0 })
     }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2024 LiveKit
+ * Copyright 2025 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,14 +20,17 @@ import XCTest
 struct RoomTestingOptions {
     let delegate: RoomDelegate?
     let canPublish: Bool
+    let canPublishData: Bool
     let canSubscribe: Bool
 
     init(delegate: RoomDelegate? = nil,
          canPublish: Bool = false,
+         canPublishData: Bool = false,
          canSubscribe: Bool = false)
     {
         self.delegate = delegate
         self.canPublish = canPublish
+        self.canPublishData = canPublishData
         self.canSubscribe = canSubscribe
     }
 }
@@ -48,6 +51,7 @@ extension XCTestCase {
     func liveKitServerToken(for room: String,
                             identity: String,
                             canPublish: Bool,
+                            canPublishData: Bool,
                             canSubscribe: Bool) throws -> String
     {
         let apiKey = readEnvironmentString(for: "LIVEKIT_TESTING_API_KEY", defaultValue: "devkey")
@@ -60,7 +64,8 @@ extension XCTestCase {
         tokenGenerator.videoGrant = VideoGrant(room: room,
                                                roomJoin: true,
                                                canPublish: canPublish,
-                                               canSubscribe: canSubscribe)
+                                               canSubscribe: canSubscribe,
+                                               canPublishData: canPublishData)
         return try tokenGenerator.sign()
     }
 
@@ -86,6 +91,7 @@ extension XCTestCase {
             let token = try liveKitServerToken(for: roomName,
                                                identity: identity,
                                                canPublish: $0.element.canPublish,
+                                               canPublishData: $0.element.canPublishData,
                                                canSubscribe: $0.element.canSubscribe)
             print("Token: \(token) for room: \(roomName)")
 
@@ -97,6 +103,8 @@ extension XCTestCase {
             for element in rooms {
                 group.addTask {
                     try await element.room.connect(url: url, token: element.token)
+                    XCTAssert(element.room.localParticipant.identity != nil, "LocalParticipant.identity is nil")
+                    print("LocalParticipant.identity: \(String(describing: element.room.localParticipant.identity))")
                 }
             }
             try await group.waitForAll()
@@ -105,6 +113,7 @@ extension XCTestCase {
         let observerToken = try liveKitServerToken(for: roomName,
                                                    identity: "observer",
                                                    canPublish: true,
+                                                   canPublishData: true,
                                                    canSubscribe: true)
 
         print("Observer token: \(observerToken) for room: \(roomName)")
@@ -162,5 +171,42 @@ extension XCTestCase {
 extension Array where Element: Comparable {
     func hasSameElements(as other: [Element]) -> Bool {
         count == other.count && sorted() == other.sorted()
+    }
+}
+
+extension Room {
+    func createWatcher<T>() -> RoomWatcher<T> {
+        let result = RoomWatcher<T>(id: "Room watcher for \(String(describing: sid))")
+        add(delegate: result)
+        return result
+    }
+}
+
+class RoomWatcher<T: Decodable>: RoomDelegate {
+    public let id: String
+    public let didReceiveDataCompleters = CompleterMapActor<T>(label: "Data receive completer", defaultTimeout: 10)
+
+    // MARK: - Private
+
+    private struct State {}
+
+    private let _state = StateSync(State())
+
+    init(id: String) {
+        self.id = id
+    }
+
+    // MARK: - Delegates
+
+    func room(_: Room, participant _: RemoteParticipant?, didReceiveData data: Data, forTopic topic: String) {
+        // print("didReceiveData: \(data) for topic: \(topic)")
+        Task {
+            do {
+                let payload = try JSONDecoder().decode(T.self, from: data)
+                await didReceiveDataCompleters.resume(returning: payload, for: topic)
+            } catch {
+                await didReceiveDataCompleters.resume(throwing: LiveKitError(.invalidState), for: topic)
+            }
+        }
     }
 }

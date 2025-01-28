@@ -1,5 +1,5 @@
 /*
- * Copyright 2024 LiveKit
+ * Copyright 2025 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,13 +22,14 @@ internal import LiveKitWebRTC
 @_implementationOnly import LiveKitWebRTC
 #endif
 
-public enum LiveKitErrorType: Int {
+public enum LiveKitErrorType: Int, Sendable {
     case unknown = 0
     case cancelled = 100
     case timedOut = 101
     case failedToParseUrl = 102
     case failedToConvertData = 103
     case invalidState = 104
+    case invalidParameter = 105
 
     case webRTC = 201
 
@@ -50,6 +51,7 @@ public enum LiveKitErrorType: Int {
     case captureFormatNotFound = 702
     case unableToResolveFPSRange = 703
     case capturerDimensionsNotResolved = 704
+    case deviceAccessDenied = 705
 }
 
 extension LiveKitErrorType: CustomStringConvertible {
@@ -65,6 +67,8 @@ extension LiveKitErrorType: CustomStringConvertible {
             return "Failed to convert data"
         case .invalidState:
             return "Invalid state"
+        case .invalidParameter:
+            return "Invalid parameter"
         case .webRTC:
             return "WebRTC error"
         case .network:
@@ -97,7 +101,7 @@ extension LiveKitErrorType: CustomStringConvertible {
 }
 
 @objc
-public class LiveKitError: NSError {
+public class LiveKitError: NSError, @unchecked Sendable {
     public let type: LiveKitErrorType
     public let message: String?
     public let underlyingError: Error?

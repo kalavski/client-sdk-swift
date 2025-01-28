@@ -1,5 +1,5 @@
 /*
- * Copyright 2024 LiveKit
+ * Copyright 2025 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,8 +28,8 @@ public class Room: NSObject, ObservableObject, Loggable {
 
     // MARK: - Public
 
-    @objc
     /// Server assigned id of the Room.
+    @objc
     public var sid: Sid? { _state.sid }
 
     /// Server assigned id of the Room. *async* version of ``Room/sid``.
@@ -62,6 +62,9 @@ public class Room: NSObject, ObservableObject, Loggable {
     @objc
     public var activeSpeakers: [Participant] { _state.activeSpeakers }
 
+    @objc
+    public var creationTime: Date? { _state.creationTime }
+
     /// If the current room has a participant with `recorder:true` in its JWT grant.
     @objc
     public var isRecording: Bool { _state.isRecording }
@@ -77,7 +80,7 @@ public class Room: NSObject, ObservableObject, Loggable {
 
     // expose engine's vars
     @objc
-    public var url: String? { _state.url }
+    public var url: String? { _state.url?.absoluteString }
 
     @objc
     public var token: String? { _state.token }
@@ -102,22 +105,11 @@ public class Room: NSObject, ObservableObject, Loggable {
     let publisherTransportConnectedCompleter = AsyncCompleter<Void>(label: "Publisher transport connect", defaultTimeout: .defaultTransportState)
 
     let signalClient = SignalClient()
-    var publisher: Transport?
-    var subscriber: Transport?
-    var subscriberPrimary: Bool = false
 
     // MARK: - DataChannels
 
-    lazy var subscriberDataChannel: DataChannelPairActor = .init(onDataPacket: { [weak self] dataPacket in
-        guard let self else { return }
-        switch dataPacket.value {
-        case let .speaker(update): self.engine(self, didUpdateSpeakers: update.speakers)
-        case let .user(userPacket): self.engine(self, didReceiveUserPacket: userPacket)
-        default: return
-        }
-    })
-
-    let publisherDataChannel = DataChannelPairActor()
+    lazy var subscriberDataChannel = DataChannelPair(delegate: self)
+    lazy var publisherDataChannel = DataChannelPair(delegate: self)
 
     var _blockProcessQueue = DispatchQueue(label: "LiveKitSDK.engine.pendingBlocks",
                                            qos: .default)
@@ -136,6 +128,7 @@ public class Room: NSObject, ObservableObject, Loggable {
         var remoteParticipants = [Participant.Identity: RemoteParticipant]()
         var activeSpeakers = [Participant]()
 
+        var creationTime: Date?
         var isRecording: Bool = false
 
         var maxParticipants: Int = 0
@@ -145,7 +138,7 @@ public class Room: NSObject, ObservableObject, Loggable {
         var serverInfo: Livekit_ServerInfo?
 
         // Engine
-        var url: String?
+        var url: URL?
         var token: String?
         // preferred reconnect mode which will be used only for next attempt
         var nextReconnectMode: ReconnectMode?
@@ -154,6 +147,13 @@ public class Room: NSObject, ObservableObject, Loggable {
         var disconnectError: LiveKitError?
         var connectStopwatch = Stopwatch(label: "connect")
         var hasPublished: Bool = false
+
+        var publisher: Transport?
+        var subscriber: Transport?
+        var isSubscriberPrimary: Bool = false
+
+        // Agents
+        var transcriptionReceivedTimes: [String: Date] = [:]
 
         @discardableResult
         mutating func updateRemoteParticipant(info: Livekit_ParticipantInfo, room: Room) -> RemoteParticipant {
@@ -172,7 +172,7 @@ public class Room: NSObject, ObservableObject, Loggable {
         }
     }
 
-    var _state: StateSync<State>
+    let _state: StateSync<State>
 
     private let _sidCompleter = AsyncCompleter<Sid>(label: "sid", defaultTimeout: .resolveSid)
 
@@ -209,7 +209,7 @@ public class Room: NSObject, ObservableObject, Loggable {
         }
 
         // listen to app states
-        AppStateListener.shared.add(delegate: self)
+        AppStateListener.shared.delegates.add(delegate: self)
 
         // trigger events when state mutates
         _state.onDidMutate = { [weak self] newState, oldState in
@@ -287,7 +287,12 @@ public class Room: NSObject, ObservableObject, Loggable {
                         connectOptions: ConnectOptions? = nil,
                         roomOptions: RoomOptions? = nil) async throws
     {
-        log("connecting to room...", .info)
+        guard let url = URL(string: url), url.isValidForConnect else {
+            log("URL parse failed", .error)
+            throw LiveKitError(.failedToParseUrl)
+        }
+
+        log("Connecting to room...", .info)
 
         var state = _state.copy()
 
@@ -499,6 +504,14 @@ extension Room: AppStateDelegate {
             await self.disconnect()
         }
     }
+
+    func appWillSleep() {
+        Task.detached {
+            await self.disconnect()
+        }
+    }
+
+    func appDidWake() {}
 }
 
 // MARK: - Devices
@@ -506,9 +519,26 @@ extension Room: AppStateDelegate {
 public extension Room {
     /// Set this to true to bypass initialization of voice processing.
     /// Must be set before RTCPeerConnectionFactory gets initialized.
+    /// The most reliable place to set this is in your application's initialization process.
     @objc
     static var bypassVoiceProcessing: Bool {
         get { RTC.bypassVoiceProcessing }
         set { RTC.bypassVoiceProcessing = newValue }
+    }
+}
+
+// MARK: - DataChannelDelegate
+
+extension Room: DataChannelDelegate {
+    func dataChannel(_: DataChannelPair, didReceiveDataPacket dataPacket: Livekit_DataPacket) {
+        switch dataPacket.value {
+        case let .speaker(update): engine(self, didUpdateSpeakers: update.speakers)
+        case let .user(userPacket): engine(self, didReceiveUserPacket: userPacket)
+        case let .transcription(packet): room(didReceiveTranscriptionPacket: packet)
+        case let .rpcResponse(response): room(didReceiveRpcResponse: response)
+        case let .rpcAck(ack): room(didReceiveRpcAck: ack)
+        case let .rpcRequest(request): room(didReceiveRpcRequest: request, from: dataPacket.participantIdentity)
+        default: return
+        }
     }
 }

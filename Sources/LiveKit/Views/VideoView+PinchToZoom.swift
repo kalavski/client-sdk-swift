@@ -1,5 +1,5 @@
 /*
- * Copyright 2024 LiveKit
+ * Copyright 2025 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,7 +23,7 @@ internal import LiveKitWebRTC
 extension VideoView {
     static let rampRate: Float = 32.0
     /// Options for pinch to zoom in / out feature.
-    public struct PinchToZoomOptions: OptionSet {
+    public struct PinchToZoomOptions: OptionSet, Sendable {
         public let rawValue: UInt
 
         public init(rawValue: UInt) {
@@ -42,7 +42,7 @@ extension VideoView {
         public static let resetOnRelease = PinchToZoomOptions(rawValue: 1 << 2)
     }
 
-    #if os(iOS) || os(visionOS)
+    #if os(iOS)
     func _rampZoomFactorToAllowedBounds(options: PinchToZoomOptions) {
         guard let device = _currentCaptureDevice else { return }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright 2024 LiveKit
+ * Copyright 2025 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,7 +22,7 @@ import UIKit
 import AppKit
 #endif
 
-#if os(iOS)
+#if os(iOS) || os(visionOS) || os(tvOS)
 public typealias NativeViewType = UIView
 #elseif os(macOS)
 public typealias NativeViewType = NSView
@@ -41,7 +41,7 @@ open class NativeView: NativeViewType {
         fatalError("init(coder:) has not been implemented")
     }
 
-    #if os(iOS)
+    #if os(iOS) || os(visionOS) || os(tvOS)
     override public func layoutSubviews() {
         super.layoutSubviews()
         performLayout()

@@ -9,6 +9,8 @@ let package = Package(
         .iOS(.v13),
         .macOS(.v10_15),
         .macCatalyst(.v14),
+        .visionOS(.v1),
+        .tvOS(.v17),
     ],
     products: [
         .library(
@@ -18,7 +20,7 @@ let package = Package(
     ],
     dependencies: [
         // LK-Prefixed Dynamic WebRTC XCFramework
-        .package(url: "https://github.com/livekit/webrtc-xcframework.git", exact: "125.6422.01"),
+        .package(url: "https://github.com/livekit/webrtc-xcframework.git", exact: "125.6422.11"),
         .package(url: "https://github.com/apple/swift-protobuf.git", from: "1.26.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.4"),
         // Only used for DocC generation
@@ -28,11 +30,16 @@ let package = Package(
     ],
     targets: [
         .target(
+            name: "LKObjCHelpers",
+            publicHeadersPath: "include"
+        ),
+        .target(
             name: "LiveKit",
             dependencies: [
                 .product(name: "LiveKitWebRTC", package: "webrtc-xcframework"),
                 .product(name: "SwiftProtobuf", package: "swift-protobuf"),
                 .product(name: "Logging", package: "swift-log"),
+                "LKObjCHelpers",
             ],
             resources: [
                 .process("PrivacyInfo.xcprivacy"),
@@ -55,5 +62,8 @@ let package = Package(
                 .product(name: "JWTKit", package: "jwt-kit"),
             ]
         ),
+    ],
+    swiftLanguageVersions: [
+        .v5,
     ]
 )

@@ -1,5 +1,5 @@
 /*
- * Copyright 2024 LiveKit
+ * Copyright 2025 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -39,7 +39,7 @@ public class VideoView: NativeView, Loggable {
 
     /// Specifies how to render the video withing the ``VideoView``'s bounds.
     @objc
-    public enum LayoutMode: Int, Codable {
+    public enum LayoutMode: Int, Codable, Sendable {
         /// Video will be fully visible within the ``VideoView``.
         case fit
         /// Video will fully cover up the ``VideoView``.
@@ -47,7 +47,7 @@ public class VideoView: NativeView, Loggable {
     }
 
     @objc
-    public enum MirrorMode: Int, Codable {
+    public enum MirrorMode: Int, Codable, Sendable {
         /// Will mirror if the track is a front facing camera track.
         case auto
         case off
@@ -55,14 +55,14 @@ public class VideoView: NativeView, Loggable {
     }
 
     @objc
-    public enum RenderMode: Int, Codable {
+    public enum RenderMode: Int, Codable, Sendable {
         case auto
         case metal
         case sampleBuffer
     }
 
     @objc
-    public enum TransitionMode: Int, Codable {
+    public enum TransitionMode: Int, Codable, Sendable {
         case none
         case crossDissolve
         case flip
@@ -241,7 +241,7 @@ public class VideoView: NativeView, Loggable {
     private var _currentFPS: Int = 0
     private var _frameCount: Int = 0
 
-    #if os(iOS) || os(visionOS)
+    #if os(iOS)
     private lazy var _pinchGestureRecognizer = UIPinchGestureRecognizer(target: self, action: #selector(_handlePinchGesture(_:)))
     // This should be thread safe so it's not required to be guarded by the lock
     var _pinchStartZoomFactor: CGFloat = 0.0
@@ -270,42 +270,39 @@ public class VideoView: NativeView, Loggable {
 
             let shouldRenderDidUpdate = newState.shouldRender != oldState.shouldRender
             let renderModeDidUpdate = newState.renderMode != oldState.renderMode
-
-            // track was swapped
             let trackDidUpdate = !Self.track(oldState.track as? VideoTrack, isEqualWith: newState.track as? VideoTrack)
 
-            // Enter .main only if the following conditions are met...
+            if trackDidUpdate || shouldRenderDidUpdate {
+                // Handle track removal outside of main queue
+                if let track = oldState.track as? VideoTrack {
+                    track.remove(videoRenderer: self)
+                }
+            }
+
+            // Enter .main only if UI updates are required
             if trackDidUpdate || shouldRenderDidUpdate || renderModeDidUpdate {
-                // Execute on main thread
                 self.mainSyncOrAsync {
                     var didReCreateNativeRenderer = false
 
                     if trackDidUpdate || shouldRenderDidUpdate {
-                        // clean up old track
-                        if let track = oldState.track as? VideoTrack {
-                            track.remove(videoRenderer: self)
-
-                            if let r = self._primaryRenderer {
-                                r.removeFromSuperview()
-                                self._primaryRenderer = nil
-                            }
-
-                            if let r = self._secondaryRenderer {
-                                r.removeFromSuperview()
-                                self._secondaryRenderer = nil
-                            }
+                        // Clean up old renderers
+                        if let r = self._primaryRenderer {
+                            r.removeFromSuperview()
+                            self._primaryRenderer = nil
                         }
 
-                        // set new track
+                        if let r = self._secondaryRenderer {
+                            r.removeFromSuperview()
+                            self._secondaryRenderer = nil
+                        }
+
+                        // Set up new renderer if needed
                         if let track = newState.track as? VideoTrack, newState.shouldRender {
-                            // re-create renderer on main thread
                             let nr = self.recreatePrimaryRenderer(for: newState.renderMode)
                             didReCreateNativeRenderer = true
 
-                            track.add(videoRenderer: self)
-
                             if let frame = track._state.videoFrame {
-                                self.log("rendering cached frame tack: \(String(describing: track._state.sid))")
+                                self.log("rendering cached frame track: \(String(describing: track._state.sid))")
                                 nr.renderFrame(frame.toRTCType())
                                 self.setNeedsLayout()
                             }
@@ -315,6 +312,13 @@ public class VideoView: NativeView, Loggable {
                     if renderModeDidUpdate, !didReCreateNativeRenderer {
                         self.recreatePrimaryRenderer(for: newState.renderMode)
                     }
+                }
+            }
+
+            // Handle track addition outside of main queue
+            if trackDidUpdate || shouldRenderDidUpdate {
+                if let track = newState.track as? VideoTrack, newState.shouldRender {
+                    track.add(videoRenderer: self)
                 }
             }
 
@@ -354,7 +358,7 @@ public class VideoView: NativeView, Loggable {
                 }
             }
 
-            #if os(iOS) || os(visionOS)
+            #if os(iOS)
             if newState.pinchToZoomOptions != oldState.pinchToZoomOptions {
                 Task.detached { @MainActor in
                     self._pinchGestureRecognizer.isEnabled = newState.pinchToZoomOptions.isEnabled
@@ -395,7 +399,7 @@ public class VideoView: NativeView, Loggable {
 
         _renderTimer.restart()
 
-        #if os(iOS) || os(visionOS)
+        #if os(iOS)
         // Add pinch gesture recognizer
         addGestureRecognizer(_pinchGestureRecognizer)
         _pinchGestureRecognizer.isEnabled = _state.pinchToZoomOptions.isEnabled
@@ -490,6 +494,7 @@ public class VideoView: NativeView, Loggable {
         if let _primaryRenderer {
             _primaryRenderer.frame = rendererFrame
 
+            #if os(iOS) || os(macOS)
             if let mtlVideoView = _primaryRenderer as? LKRTCMTLVideoView {
                 if let rotationOverride = state.rotationOverride {
                     mtlVideoView.rotationOverride = NSNumber(value: rotationOverride.rawValue)
@@ -497,12 +502,13 @@ public class VideoView: NativeView, Loggable {
                     mtlVideoView.rotationOverride = nil
                 }
             }
+            #endif
 
             if let _secondaryRenderer {
                 _secondaryRenderer.frame = rendererFrame
-                _secondaryRenderer.set(mirrored: _shouldMirror())
+                _secondaryRenderer.set(isMirrored: _shouldMirror())
             } else {
-                _primaryRenderer.set(mirrored: _shouldMirror())
+                _primaryRenderer.set(isMirrored: _shouldMirror())
             }
         }
     }
@@ -700,16 +706,23 @@ extension VideoView: VideoRenderer {
             self._secondaryRenderer = nil
         }
 
+        let previousPrimaryRendered = _primaryRenderer
+        let completion: (Bool) -> Void = { _ in
+            previousPrimaryRendered?.removeFromSuperview()
+        }
+
         // Currently only for iOS
         #if os(iOS)
         let (mode, duration, position) = _state.read { ($0.transitionMode, $0.transitionDuration, $0.captureDevice?.facingPosition) }
         if let transitionOption = mode.toAnimationOption(fromPosition: position) {
-            UIView.transition(with: self, duration: duration, options: transitionOption, animations: block, completion: nil)
+            UIView.transition(with: self, duration: duration, options: transitionOption, animations: block, completion: completion)
         } else {
             block()
+            completion(true)
         }
         #else
         block()
+        completion(true)
         #endif
     }
 }
@@ -736,10 +749,13 @@ extension VideoView {
         #elseif os(macOS)
         // same method used with WebRTC
         !MTLCopyAllDevices().isEmpty
+        #else
+        false
         #endif
     }
 
     static func createNativeRendererView(for renderMode: VideoView.RenderMode) -> NativeRendererView {
+        #if os(iOS) || os(macOS)
         if case .sampleBuffer = renderMode {
             logger.log("Using AVSampleBufferDisplayLayer for VideoView's Renderer", type: VideoView.self)
             return SampleBufferVideoRenderer()
@@ -767,16 +783,21 @@ extension VideoView {
 
             return result
         }
+        #else
+        return SampleBufferVideoRenderer()
+        #endif
     }
 }
 
 // MARK: - Access MTKView
 
+#if !os(visionOS) || compiler(>=6.0)
 extension NativeViewType {
     func findMTKView() -> MTKView? {
         subviews.compactMap { $0 as? MTKView }.first
     }
 }
+#endif
 
 #if os(macOS)
 extension NSView {
@@ -809,9 +830,10 @@ extension NSView {
 }
 #endif
 
+#if os(iOS) || os(macOS)
 extension LKRTCMTLVideoView: Mirrorable {
-    func set(mirrored: Bool) {
-        if mirrored {
+    func set(isMirrored: Bool) {
+        if isMirrored {
             #if os(macOS)
             // This is required for macOS
             wantsLayer = true
@@ -829,6 +851,7 @@ extension LKRTCMTLVideoView: Mirrorable {
         }
     }
 }
+#endif
 
 private extension VideoView {
     func mainSyncOrAsync(operation: @escaping () -> Void) {

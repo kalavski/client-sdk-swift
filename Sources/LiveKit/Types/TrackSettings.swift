@@ -1,5 +1,5 @@
 /*
- * Copyright 2024 LiveKit
+ * Copyright 2025 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@
 
 import Foundation
 
-struct TrackSettings: Equatable, Hashable {
+struct TrackSettings: Equatable, Hashable, Sendable {
     let isEnabled: Bool
     let dimensions: Dimensions
     let videoQuality: VideoQuality

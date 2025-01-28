@@ -1,5 +1,5 @@
 /*
- * Copyright 2024 LiveKit
+ * Copyright 2025 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,7 +28,7 @@ public let defaultRatchetWindowSize: Int32 = 0
 public let defaultFailureTolerance: Int32 = -1
 
 @objc
-public class KeyProviderOptions: NSObject {
+public final class KeyProviderOptions: NSObject, Sendable {
     @objc
     public let sharedKey: Bool
 
@@ -80,7 +80,7 @@ public class KeyProviderOptions: NSObject {
 }
 
 @objc
-public class BaseKeyProvider: NSObject, Loggable {
+public final class BaseKeyProvider: NSObject, Loggable, Sendable {
     @objc
     public let options: KeyProviderOptions
 

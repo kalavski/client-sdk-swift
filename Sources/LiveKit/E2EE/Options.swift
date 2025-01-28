@@ -1,5 +1,5 @@
 /*
- * Copyright 2024 LiveKit
+ * Copyright 2025 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@
 import Foundation
 
 @objc
-public enum EncryptionType: Int {
+public enum EncryptionType: Int, Sendable {
     case none
     case gcm
     case custom
@@ -46,7 +46,7 @@ extension Livekit_Encryption.TypeEnum {
 }
 
 @objc
-public class E2EEOptions: NSObject {
+public final class E2EEOptions: NSObject, Sendable {
     @objc
     public let keyProvider: BaseKeyProvider
 

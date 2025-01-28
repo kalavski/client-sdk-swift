@@ -1,5 +1,5 @@
 /*
- * Copyright 2024 LiveKit
+ * Copyright 2025 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,7 +20,11 @@ import AVFoundation
 class DeviceManager: Loggable {
     // MARK: - Public
 
+    #if compiler(>=6.0)
+    public nonisolated(unsafe) static let shared = DeviceManager()
+    #else
     public static let shared = DeviceManager()
+    #endif
 
     public static func prepare() {
         // Instantiate shared instance
@@ -29,7 +33,7 @@ class DeviceManager: Loggable {
 
     // Async version, waits until inital device fetch is complete
     public func devices() async throws -> [AVCaptureDevice] {
-        try await devicesCompleter.wait()
+        try await _devicesCompleter.wait()
     }
 
     // Sync version
@@ -37,9 +41,10 @@ class DeviceManager: Loggable {
         _state.devices
     }
 
+    #if os(iOS) || os(macOS) || os(tvOS)
     private lazy var discoverySession: AVCaptureDevice.DiscoverySession = {
         var deviceTypes: [AVCaptureDevice.DeviceType]
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         // In order of priority
         deviceTypes = [
             .builtInTripleCamera, // Virtual, switchOver: [2, 6], default: 2
@@ -49,15 +54,15 @@ class DeviceManager: Loggable {
             .builtInTelephotoCamera, // Physical
             .builtInUltraWideCamera, // Physical
         ]
-        #elseif os(macOS)
+        #else
         deviceTypes = [
             .builtInWideAngleCamera,
         ]
         #endif
 
-        // Xcode 15.0 Swift 5.9 (iOS 17)
+        // Xcode 15.0 Swift 5.9
         #if compiler(>=5.9)
-        if #available(macOS 14.0, iOS 17.0, *) {
+        if #available(iOS 17.0, macOS 14.0, tvOS 17.0, *) {
             deviceTypes.append(contentsOf: [
                 .continuityCamera,
                 .external,
@@ -69,30 +74,78 @@ class DeviceManager: Loggable {
                                                 mediaType: .video,
                                                 position: .unspecified)
     }()
+    #endif
 
     private struct State {
         var devices: [AVCaptureDevice] = []
+        var multiCamDeviceSets: [Set<AVCaptureDevice>] = []
     }
 
     private let _state = StateSync(State())
 
-    private let devicesCompleter = AsyncCompleter<[AVCaptureDevice]>(label: "devices", defaultTimeout: 10)
+    private let _devicesCompleter = AsyncCompleter<[AVCaptureDevice]>(label: "devices", defaultTimeout: 10)
+    private let _multiCamDeviceSetsCompleter = AsyncCompleter<[Set<AVCaptureDevice>]>(label: "multiCamDeviceSets", defaultTimeout: 10)
 
-    private var _observation: NSKeyValueObservation?
+    private var _devicesObservation: NSKeyValueObservation?
+    private var _multiCamDeviceSetsObservation: NSKeyValueObservation?
+
+    /// Find multi-cam compatible devices.
+    func multiCamCompatibleDevices(for devices: Set<AVCaptureDevice>) async throws -> [AVCaptureDevice] {
+        let deviceSets = try await _multiCamDeviceSetsCompleter.wait()
+
+        let compatibleDevices = deviceSets.filter { $0.isSuperset(of: devices) }
+            .reduce(into: Set<AVCaptureDevice>()) { $0.formUnion($1) }
+            .subtracting(devices)
+
+        let devices = try await _devicesCompleter.wait()
+
+        // This ensures the ordering is same as the devices array.
+        return devices.filter { compatibleDevices.contains($0) }
+    }
 
     init() {
         log()
 
+        #if os(iOS) || os(macOS) || os(tvOS)
         DispatchQueue.global(qos: .background).async { [weak self] in
             guard let self else { return }
-            self._observation = self.discoverySession.observe(\.devices, options: [.initial, .new]) { [weak self] _, value in
+            self._devicesObservation = self.discoverySession.observe(\.devices, options: [.initial, .new]) { [weak self] _, value in
                 guard let self else { return }
-                // Sort priority: .front = 2, .back = 1, .unspecified = 3
-                let devices = (value.newValue ?? []).sorted(by: { $0.position.rawValue > $1.position.rawValue })
+                let devices = (value.newValue ?? []).sortedByFacingPositionPriority()
                 self.log("Devices: \(String(describing: devices))")
                 self._state.mutate { $0.devices = devices }
-                self.devicesCompleter.resume(returning: devices)
+                self._devicesCompleter.resume(returning: devices)
+                #if os(macOS)
+                self._multiCamDeviceSetsCompleter.resume(returning: [])
+                #endif
             }
         }
+        #elseif os(visionOS)
+        // For visionOS, there is no DiscoverySession so return the Persona camera if available.
+        let devices: [AVCaptureDevice] = [.systemPreferredCamera].compactMap { $0 }
+        _state.mutate { $0.devices = devices }
+        _devicesCompleter.resume(returning: devices)
+        _multiCamDeviceSetsCompleter.resume(returning: [])
+        #endif
+
+        #if os(iOS) || os(tvOS)
+        DispatchQueue.global(qos: .background).async { [weak self] in
+            guard let self else { return }
+            self._multiCamDeviceSetsObservation = self.discoverySession.observe(\.supportedMultiCamDeviceSets, options: [.initial, .new]) { [weak self] _, value in
+                guard let self else { return }
+                let deviceSets = (value.newValue ?? [])
+                self.log("MultiCam deviceSets: \(String(describing: deviceSets))")
+                self._state.mutate { $0.multiCamDeviceSets = deviceSets }
+                self._multiCamDeviceSetsCompleter.resume(returning: deviceSets)
+            }
+        }
+        #endif
+    }
+}
+
+extension [AVCaptureDevice] {
+    /// Sort priority: .front = 2, .back = 1, .unspecified = 3.
+    func sortedByFacingPositionPriority() -> [Element] {
+        sorted(by: { $0.facingPosition.rawValue > $1.facingPosition.rawValue })
     }
 }

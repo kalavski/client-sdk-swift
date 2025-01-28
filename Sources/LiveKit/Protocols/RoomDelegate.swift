@@ -1,5 +1,5 @@
 /*
- * Copyright 2024 LiveKit
+ * Copyright 2025 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -99,6 +99,13 @@ public protocol RoomDelegate: AnyObject {
     @objc optional
     func room(_ room: Room, participant: Participant, didUpdatePermissions permissions: ParticipantPermissions)
 
+    @objc optional
+    func room(_ room: Room, participant: Participant, didUpdateAttributes attributes: [String: String])
+
+    /// Received transcription segments.
+    @objc optional
+    func room(_ room: Room, participant: Participant, trackPublication: TrackPublication, didReceiveTranscriptionSegments segments: [TranscriptionSegment])
+
     // MARK: - Track Publications
 
     /// The ``LocalParticipant`` has published a ``LocalTrack``.
@@ -112,6 +119,10 @@ public protocol RoomDelegate: AnyObject {
     /// The ``LocalParticipant`` has un-published a ``LocalTrack``.
     @objc(room:localParticipant:didUnpublishTrack:) optional
     func room(_ room: Room, participant: LocalParticipant, didUnpublishTrack publication: LocalTrackPublication)
+
+    /// Fired when the first remote participant has subscribed to the localParticipant's track.
+    @objc(room:localParticipant:remoteDidSubscribeTrack:) optional
+    func room(_ room: Room, participant: LocalParticipant, remoteDidSubscribeTrack publication: LocalTrackPublication)
 
     /// A ``RemoteParticipant`` has un-published a ``RemoteTrack``.
     @objc(room:remoteParticipant:didUnpublishTrack:) optional

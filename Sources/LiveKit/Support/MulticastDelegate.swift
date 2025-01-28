@@ -1,5 +1,5 @@
 /*
- * Copyright 2024 LiveKit
+ * Copyright 2025 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -92,6 +92,22 @@ public class MulticastDelegate<T>: NSObject, Loggable {
         _queue.async {
             for delegate in delegates {
                 fnc(delegate)
+            }
+        }
+    }
+
+    /// Awaitable version of notify
+    func notifyAsync(_ fnc: @escaping (T) -> Void) async {
+        // Read a copy of delegates
+        let delegates = _state.read { $0.delegates.allObjects.compactMap { $0 as? T } }
+
+        // Convert to async
+        await withCheckedContinuation { continuation in
+            _queue.async {
+                for delegate in delegates {
+                    fnc(delegate)
+                }
+                continuation.resume()
             }
         }
     }
